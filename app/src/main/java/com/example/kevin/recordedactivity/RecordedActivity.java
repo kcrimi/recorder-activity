@@ -48,7 +48,6 @@ public abstract class RecordedActivity extends Activity {
     private MediaProjection mMediaProjection;
     private Surface mInputSurface;
     private AudioRecord mAudioRecorder;
-    private boolean mAudioRecording;
     private MediaMuxer mMuxer;
     private MediaCodec mVideoEncoder;
     private MediaCodec mAudioEncoder;
@@ -59,6 +58,13 @@ public abstract class RecordedActivity extends Activity {
     private int audioTrackIndex = -1;
 
     private final Object mMuxerLock = new Object();
+    private final Object mAudioEncoderLock = new Object();
+    private final Object mWriteVideoLock = new Object();
+    private final Object mWriteAudioLock = new Object();
+
+    private volatile boolean mVideoEncoding;
+    private volatile boolean mAudioEncoding;
+    private volatile boolean mAudioRecording;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -203,40 +209,9 @@ public abstract class RecordedActivity extends Activity {
     }
 
     private void releaseEncoders() {
-        if (mMuxer != null) {
-            synchronized (mMuxerLock) {
-                if (mMuxerStarted) {
-                    mMuxer.stop();
-                }
-                mMuxer.release();
-                mMuxer = null;
-                mMuxerStarted = false;
-            }
-        }
-        if (mVideoEncoder != null) {
-            mVideoEncoder.stop();
-            mVideoEncoder.release();
-            mVideoEncoder = null;
-        }
-        if (mInputSurface != null) {
-            mInputSurface.release();
-            mInputSurface = null;
-        }
-        if (mMediaProjection != null) {
-            mMediaProjection.stop();
-            mMediaProjection = null;
-        }
-        if (mAudioEncoder != null) {
-            mAudioEncoder.stop();
-            mAudioEncoder.release();
-            mAudioEncoder = null;
-        }
-        if (mAudioRecorder != null) {
-            mAudioRecorder.stop();
-            mAudioRecorder.release();
-            mAudioRecording = false;
-            mAudioRecorder = null;
-        }
+        mAudioRecording = false;
+        mAudioEncoding = false;
+        mVideoEncoding = false;
     }
 
     @Override
@@ -266,13 +241,17 @@ public abstract class RecordedActivity extends Activity {
 
                 // send current frame data to encoder
                 try {
-                    int inputBufferIndex = mAudioEncoder.dequeueInputBuffer(-1);
-                    if (inputBufferIndex >= 0) {
-                        inputBuffer = mAudioEncoder.getInputBuffer(inputBufferIndex);
-                        inputBuffer.clear();
-                        inputBuffer.put(mTempBuffer);
+                    synchronized (mAudioEncoderLock) {
+                        if (mAudioEncoding) {
+                            int inputBufferIndex = mAudioEncoder.dequeueInputBuffer(-1);
+                            if (inputBufferIndex >= 0) {
+                                inputBuffer = mAudioEncoder.getInputBuffer(inputBufferIndex);
+                                inputBuffer.clear();
+                                inputBuffer.put(mTempBuffer);
 
-                        mAudioEncoder.queueInputBuffer(inputBufferIndex, 0, mTempBuffer.length, audioPresentationTimeNs / 1000, 0);
+                                mAudioEncoder.queueInputBuffer(inputBufferIndex, 0, mTempBuffer.length, audioPresentationTimeNs / 1000, 0);
+                            }
+                        }
                     }
                 } catch (Throwable t) {
                     t.printStackTrace();
@@ -288,32 +267,40 @@ public abstract class RecordedActivity extends Activity {
 
             // send current frame data to encoder
             try {
-                int inputBufferIndex = mAudioEncoder.dequeueInputBuffer(-1);
-                if (inputBufferIndex >= 0) {
-                    inputBuffer = mAudioEncoder.getInputBuffer(inputBufferIndex);
-                    inputBuffer.clear();
-                    inputBuffer.put(mTempBuffer);
+                synchronized (mAudioEncoderLock) {
+                    if (mAudioEncoding) {
+                        int inputBufferIndex = mAudioEncoder.dequeueInputBuffer(-1);
+                        if (inputBufferIndex >= 0) {
+                            inputBuffer = mAudioEncoder.getInputBuffer(inputBufferIndex);
+                            inputBuffer.clear();
+                            inputBuffer.put(mTempBuffer);
 
-                    mAudioEncoder.queueInputBuffer(inputBufferIndex, 0, mTempBuffer.length, audioPresentationTimeNs / 1000, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                            mAudioEncoder.queueInputBuffer(inputBufferIndex, 0, mTempBuffer.length, audioPresentationTimeNs / 1000, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                        }
+                    }
                 }
             } catch (Throwable t) {
                 t.printStackTrace();
             }
+
+
+            mAudioRecorder.stop();
+            mAudioRecorder.release();
+            mAudioRecorder = null;
         }
     }
 
     private class VideoEncoderTask implements Runnable {
-        private boolean videoEncoderFinished;
         private MediaCodec.BufferInfo videoBufferInfo;
 
         @Override
         public void run(){
-            videoEncoderFinished = false;
+            mVideoEncoding = true;
 
             videoBufferInfo = new MediaCodec.BufferInfo();
 
-            while(!videoEncoderFinished){
-                int bufferIndex = mVideoEncoder.dequeueOutputBuffer(videoBufferInfo, -1);
+            while(mVideoEncoding){
+                int bufferIndex = mVideoEncoder.dequeueOutputBuffer(videoBufferInfo, 10);
 
                 if (bufferIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
                     // nothing available yet
@@ -349,7 +336,11 @@ public abstract class RecordedActivity extends Activity {
                         if (mMuxerStarted) {
                             videoData.position(videoBufferInfo.offset);
                             videoData.limit(videoBufferInfo.offset + videoBufferInfo.size);
-                            mMuxer.writeSampleData(videoTrackIndex, videoData, videoBufferInfo);
+                            synchronized (mWriteVideoLock) {
+                                if (mMuxerStarted) {
+                                    mMuxer.writeSampleData(videoTrackIndex, videoData, videoBufferInfo);
+                                }
+                            }
                         } else {
                             // muxer not started
                         }
@@ -358,27 +349,54 @@ public abstract class RecordedActivity extends Activity {
                     mVideoEncoder.releaseOutputBuffer(bufferIndex, false);
 
                     if ((videoBufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
-                        videoEncoderFinished = true;
+                        mVideoEncoding = false;
                         break;
+                    }
+                }
+            }
+
+
+            mVideoEncoder.stop();
+            mVideoEncoder.release();
+            mVideoEncoder = null;
+
+            if (mInputSurface != null) {
+                mInputSurface.release();
+                mInputSurface = null;
+            }
+            if (mMediaProjection != null) {
+                mMediaProjection.stop();
+                mMediaProjection = null;
+            }
+
+            synchronized (mWriteAudioLock) {
+                synchronized (mMuxerLock) {
+                    if (mMuxer != null) {
+                        if (mMuxerStarted) {
+                            mMuxer.stop();
+                        }
+                        mMuxer.release();
+                        mMuxer = null;
+                        mMuxerStarted = false;
                     }
                 }
             }
         }
 
+
     }
 
     private class AudioEncoderTask implements Runnable {
-        private boolean audioEncoderFinished;
         private MediaCodec.BufferInfo audioBufferInfo;
 
         @Override
         public void run(){
-            audioEncoderFinished = false;
+            mAudioEncoding = true;
 
             audioBufferInfo = new MediaCodec.BufferInfo();
 
-            while(!audioEncoderFinished){
-                int bufferIndex = mAudioEncoder.dequeueOutputBuffer(audioBufferInfo, -1);
+            while(mAudioEncoding){
+                int bufferIndex = mAudioEncoder.dequeueOutputBuffer(audioBufferInfo, 10);
 
                 if (bufferIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
                     // no output available yet
@@ -416,7 +434,11 @@ public abstract class RecordedActivity extends Activity {
                                 // adjust the ByteBuffer values to match BufferInfo (not needed?)
                                 encodedData.position(audioBufferInfo.offset);
                                 encodedData.limit(audioBufferInfo.offset + audioBufferInfo.size);
-                                mMuxer.writeSampleData(audioTrackIndex, encodedData, audioBufferInfo);
+                                synchronized (mWriteAudioLock) {
+                                    if (mMuxerStarted) {
+                                        mMuxer.writeSampleData(audioTrackIndex, encodedData, audioBufferInfo);
+                                    }
+                                }
                             }
                         }
 
@@ -424,9 +446,29 @@ public abstract class RecordedActivity extends Activity {
 
                         if ((audioBufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
                             // reached EOS
-                            audioEncoderFinished = true;
+                            mAudioEncoding = false;
                             break;
                         }
+                    }
+                }
+            }
+
+
+            synchronized (mAudioEncoderLock) {
+                mAudioEncoder.stop();
+                mAudioEncoder.release();
+                mAudioEncoder = null;
+            }
+
+            synchronized (mWriteVideoLock) {
+                synchronized (mMuxerLock) {
+                    if (mMuxer != null) {
+                        if (mMuxerStarted) {
+                            mMuxer.stop();
+                        }
+                        mMuxer.release();
+                        mMuxer = null;
+                        mMuxerStarted = false;
                     }
                 }
             }
