@@ -246,7 +246,6 @@ public abstract class RecordedActivity extends Activity {
     private class AudioRecorderTask implements Runnable {
         ByteBuffer inputBuffer;
         int readResult;
-        long audioStartTime = -1;
 
         @Override
         public void run() {
@@ -256,9 +255,6 @@ public abstract class RecordedActivity extends Activity {
 
             while (mAudioRecording) {
                 audioPresentationTimeNs = System.nanoTime();
-                if (audioStartTime < 0) {
-                    audioStartTime = audioPresentationTimeNs;
-                }
 
                 readResult = mAudioRecorder.read(mTempBuffer, 0, SAMPLES_PER_FRAME);
                 if(readResult == AudioRecord.ERROR_BAD_VALUE || readResult == AudioRecord.ERROR_INVALID_OPERATION) {
@@ -273,7 +269,7 @@ public abstract class RecordedActivity extends Activity {
                         inputBuffer.clear();
                         inputBuffer.put(mTempBuffer);
 
-                        mAudioEncoder.queueInputBuffer(inputBufferIndex, 0, mTempBuffer.length, (audioPresentationTimeNs - audioStartTime) / 1000, 0);
+                        mAudioEncoder.queueInputBuffer(inputBufferIndex, 0, mTempBuffer.length, audioPresentationTimeNs / 1000, 0);
                     }
                 } catch (Throwable t) {
                     t.printStackTrace();
@@ -295,7 +291,7 @@ public abstract class RecordedActivity extends Activity {
                     inputBuffer.clear();
                     inputBuffer.put(mTempBuffer);
 
-                    mAudioEncoder.queueInputBuffer(inputBufferIndex, 0, mTempBuffer.length, (audioPresentationTimeNs - audioStartTime) / 1000, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                    mAudioEncoder.queueInputBuffer(inputBufferIndex, 0, mTempBuffer.length, audioPresentationTimeNs / 1000, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
                 }
             } catch (Throwable t) {
                 t.printStackTrace();
