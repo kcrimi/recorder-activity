@@ -104,6 +104,7 @@ public abstract class RecordedActivity extends Activity {
             mReceivedApproval = false;
             mRequestSent = false;
         }
+        releaseEncoders();
     }
 
     private void startRecording() {
@@ -214,12 +215,6 @@ public abstract class RecordedActivity extends Activity {
         mVideoEncoding = false;
     }
 
-    @Override
-    public void onBackPressed() {
-        releaseEncoders();
-        super.onBackPressed();
-    }
-
 
     private class AudioRecorderTask implements Runnable {
         ByteBuffer inputBuffer;
@@ -297,6 +292,7 @@ public abstract class RecordedActivity extends Activity {
         public void run(){
             mVideoEncoding = true;
 
+            videoTrackIndex = -1;
             videoBufferInfo = new MediaCodec.BufferInfo();
 
             while(mVideoEncoding){
@@ -393,6 +389,7 @@ public abstract class RecordedActivity extends Activity {
         public void run(){
             mAudioEncoding = true;
 
+            audioTrackIndex = -1;
             audioBufferInfo = new MediaCodec.BufferInfo();
 
             while(mAudioEncoding){
