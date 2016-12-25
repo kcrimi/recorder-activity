@@ -19,6 +19,7 @@ import android.os.Looper;
 import android.util.DisplayMetrics;
 import android.view.Display;
 import android.view.Surface;
+import android.widget.Toast;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -67,6 +68,8 @@ public abstract class RecordedActivity extends Activity {
                 mMediaProjection = mMediaProjectionManager.getMediaProjection(resultCode, intent);
                 startRecording(); // defined below
             } else {
+                Toast.makeText(this, "Permission needed to start digital transport", Toast.LENGTH_SHORT).show();
+                finish();
                 // user did not grant permissions
             }
         }
